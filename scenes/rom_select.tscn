@@ -1,0 +1,57 @@
+[gd_scene format=3]
+
+[ext_resource type="Script" path="res://scripts/rom_select.gd" id="1"]
+
+[node name="RomSelect" type="Control"]
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+script = ExtResource("1")
+
+[node name="Center" type="CenterContainer" parent="."]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+
+[node name="Box" type="VBoxContainer" parent="Center"]
+custom_minimum_size = Vector2(520, 0)
+layout_mode = 2
+theme_override_constants/separation = 16
+
+[node name="Title" type="Label" parent="Center/Box"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 32
+text = "NSMB PC"
+horizontal_alignment = 1
+
+[node name="Info" type="Label" parent="Center/Box"]
+layout_mode = 2
+text = "Select your own copy of New Super Mario Bros. (.nds).
+The game files are only used to extract the assets on your PC."
+horizontal_alignment = 1
+autowrap_mode = 3
+
+[node name="PickButton" type="Button" parent="Center/Box"]
+unique_name_in_owner = true
+layout_mode = 2
+text = "Choose ROM..."
+
+[node name="Bar" type="ProgressBar" parent="Center/Box"]
+unique_name_in_owner = true
+layout_mode = 2
+
+[node name="Status" type="Label" parent="Center/Box"]
+unique_name_in_owner = true
+layout_mode = 2
+horizontal_alignment = 1
+autowrap_mode = 3
+
+[node name="Dialog" type="FileDialog" parent="."]
+unique_name_in_owner = true
+title = "Open a ROM"
+ok_button_text = "Open"
+file_mode = 0
+access = 2
+filters = PackedStringArray("*.nds ; Nintendo DS ROM")

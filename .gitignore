@@ -1,3 +1,8 @@
 # Godot 4+ specific ignores
 .godot/
 /android/
+
+# Game files must never be committed
+*.nds
+*.sav
+/user_assets/
