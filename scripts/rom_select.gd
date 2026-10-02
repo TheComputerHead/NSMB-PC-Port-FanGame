@@ -10,6 +10,10 @@ var _thread: Thread
 
 
 func _ready() -> void:
+	# Open the picker in source/ (git-ignored) where the ROM is expected to live.
+	var source_dir := ProjectSettings.globalize_path("res://source")
+	if DirAccess.dir_exists_absolute(source_dir):
+		dialog.current_dir = source_dir
 	pick_button.pressed.connect(dialog.popup_centered_ratio.bind(0.7))
 	dialog.file_selected.connect(_on_rom_chosen)
 	for arg in OS.get_cmdline_user_args():

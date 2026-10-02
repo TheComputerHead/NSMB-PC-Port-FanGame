@@ -7,6 +7,9 @@ extends RefCounted
 const POLY_FRONT := 0x80
 const POLY_BACK := 0x40
 
+## Colour tolerance for RotSprite upscaling of textures; negative = plain integer scaling.
+static var rotsprite_tolerance := -1
+
 var d := PackedByteArray()
 var models: Array[Dictionary] = []
 var tex: NitroTex
@@ -63,6 +66,7 @@ func _parse_model(m: int, model_name: String) -> Dictionary:
 		model.materials.append({
 			"name": mats[i].name,
 			"polygon_attr": d.decode_u32(p + 0x0C),
+			"tex_param": d.decode_u32(p + 0x14),
 			"texture": tex_for.get(i, ""),
 			"palette": pal_for.get(i, ""),
 			"width": d.decode_u16(p + 0x20),
@@ -160,17 +164,25 @@ func build_model(index := 0) -> MeshInstance3D:
 		arrays[Mesh.ARRAY_NORMAL] = b.nrm
 		arrays[Mesh.ARRAY_TEX_UV] = b.uv
 		mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
-		mesh.surface_set_material(mesh.get_surface_count() - 1, _make_material(model.materials[mat_id]))
+		mesh.surface_set_material(mesh.get_surface_count() - 1, _make_material(model.materials[mat_id], b.uv))
 	var inst := MeshInstance3D.new()
 	inst.name = model.name
 	inst.mesh = mesh
 	return inst
 
 
-func _make_material(m: Dictionary) -> StandardMaterial3D:
+func _make_material(m: Dictionary, uvs: PackedVector2Array) -> StandardMaterial3D:
 	var mat := StandardMaterial3D.new()
 	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 	mat.texture_filter = BaseMaterial3D.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS_ANISOTROPIC
+	# Wrapping only matters if UVs leave the texture; otherwise clamp so linear
+	# filtering cannot pull in texels from the opposite edge.
+	var tiles := false
+	for uv in uvs:
+		if uv.x < -0.001 or uv.x > 1.001 or uv.y < -0.001 or uv.y > 1.001:
+			tiles = true
+			break
+	mat.texture_repeat = tiles and (m.tex_param & 0x30000) != 0
 	var attr: int = m.polygon_attr
 	match attr & 0xC0:
 		POLY_FRONT:
@@ -180,7 +192,7 @@ func _make_material(m: Dictionary) -> StandardMaterial3D:
 		_:
 			mat.cull_mode = BaseMaterial3D.CULL_DISABLED
 	if tex and tex.has_texture(m.texture):
-		var img := tex.get_image(m.texture, m.palette)
+		var img := _sharpen(tex.get_image(m.texture, m.palette))
 		mat.albedo_texture = ImageTexture.create_from_image(img)
 		mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA_SCISSOR
 		mat.alpha_scissor_threshold = 0.5
@@ -378,3 +390,19 @@ static func _tri(out: Dictionary, a: Array, b: Array, c: Array) -> void:
 		out.pos.append(v[0])
 		out.nrm.append(v[1])
 		out.uv.append(v[2])
+
+
+## Enlarges a texture by a whole factor with nearest-neighbour, so the GPU's
+## smoothing only blends a thin sliver at each texel edge ("sharp bilinear").
+## Plain bilinear on these tiny textures blurs them and bleeds neighbouring
+## regions of the atlas into each other (the DS never smooths texels).
+static func _sharpen(src: Image) -> Image:
+	var factor := clampi(1024 / maxi(src.get_width(), src.get_height()), 1, 8)
+	var img := src.duplicate() as Image
+	if rotsprite_tolerance >= 0 and factor > 1:
+		var passes := int(log(factor) / log(2.0))
+		img = RotSprite.upscale(src, passes, rotsprite_tolerance)
+	elif factor > 1:
+		img.resize(img.get_width() * factor, img.get_height() * factor, Image.INTERPOLATE_NEAREST)
+	img.generate_mipmaps()
+	return img

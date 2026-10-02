@@ -14,6 +14,8 @@ const HEAD := "player/mario_head_cap_LZ.bin"
 
 func _ready() -> void:
 	Settings.load_and_apply(get_viewport())
+	if "--rotsprite" in OS.get_cmdline_user_args():
+		Nsbmd.rotsprite_tolerance = 40
 	_load_logo()
 	_build_mario()
 	%PlayButton.pressed.connect(_on_play)
@@ -99,11 +101,9 @@ func _screenshot_if_asked() -> void:
 
 ## The logo is an image in assets/; fall back to plain text if it is missing.
 func _load_logo() -> void:
-	var img := Image.load_from_file("res://assets/logo.png")
-	if img == null:
+	if not ResourceLoader.exists("res://assets/logo.png"):
 		return
-	img.generate_mipmaps()
-	logo.texture = ImageTexture.create_from_image(img)
-	logo.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS
+	logo.texture = load("res://assets/logo.png")
+	logo.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR
 	logo.visible = true
 	title.visible = false

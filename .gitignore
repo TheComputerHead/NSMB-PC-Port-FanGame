@@ -6,3 +6,6 @@
 *.nds
 *.sav
 /user_assets/
+
+# Private files: the ROM and anything that must not be committed
+/source/
