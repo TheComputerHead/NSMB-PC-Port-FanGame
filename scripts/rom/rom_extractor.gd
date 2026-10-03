@@ -4,6 +4,7 @@ extends RefCounted
 ## Later steps convert these raw files into PNG / OGG / meshes.
 
 const RAW_DIR := "user://assets/raw/"
+const CODE_DIR := "user://assets/code/"
 
 
 static func extract_all(rom: NdsRom, progress: Callable = Callable()) -> Error:
@@ -23,6 +24,13 @@ static func extract_all(rom: NdsRom, progress: Callable = Callable()) -> Error:
 		done += 1
 		if progress.is_valid():
 			progress.call(done, paths.size())
+
+	# The main program holds the game's fonts; keep it (decompressed) next to the files.
+	DirAccess.make_dir_recursive_absolute(CODE_DIR)
+	var arm9 := FileAccess.open(CODE_DIR + "arm9.bin", FileAccess.WRITE)
+	if arm9:
+		arm9.store_buffer(NitroBlz.decompress(rom.arm9()))
+		arm9.close()
 
 	var marker := FileAccess.open("user://assets/extracted.txt", FileAccess.WRITE)
 	marker.store_string(rom.game_code)

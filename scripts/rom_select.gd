@@ -73,4 +73,4 @@ func _finished(err: Error, count: int) -> void:
 
 
 func _go_to_menu() -> void:
-	get_tree().change_scene_to_file("res://scenes/main_menu.tscn")
+	get_tree().change_scene_to_file("res://scenes/menu_root.tscn")

@@ -8,6 +8,10 @@
 
 config_version=5
 
+[autoload]
+
+GameAudio="*res://scripts/audio/game_audio.gd"
+
 [application]
 
 config/name="NSMB PC"

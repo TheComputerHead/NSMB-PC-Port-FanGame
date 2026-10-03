@@ -3,11 +3,20 @@ extends RefCounted
 ## Decompressor for Nintendo DS LZ77 (type 0x10) and LZ77-extended (type 0x11).
 
 
+## Some files carry a "LZ77" tag in front of the compressed stream.
+static func has_tag(src: PackedByteArray) -> bool:
+	return src.size() > 8 and src[0] == 0x4C and src[1] == 0x5A and src[2] == 0x37 and src[3] == 0x37
+
+
 static func is_compressed(src: PackedByteArray) -> bool:
+	if has_tag(src):
+		return src[4] == 0x10 or src[4] == 0x11
 	return src.size() > 4 and (src[0] == 0x10 or src[0] == 0x11)
 
 
 static func decompress(src: PackedByteArray) -> PackedByteArray:
+	if has_tag(src):
+		src = src.slice(4)
 	var out := PackedByteArray()
 	if not is_compressed(src):
 		return out

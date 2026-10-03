@@ -52,6 +52,7 @@ func _parse_model(m: int, model_name: String) -> Dictionary:
 		"nodes": [],
 		"materials": [],
 		"meshes": [],
+		"droop": {},
 		"world": {},   # node name -> bind-pose transform, filled by build_model()
 	}
 	for e in NitroDict.read(d, m + 0x40):
@@ -150,28 +151,112 @@ static func _pivot_basis(flags: int, a: float, b: float) -> Basis:
 
 
 ## Builds the model (bind pose) as a MeshInstance3D.
-func build_model(index := 0) -> MeshInstance3D:
+## `droop` maps node names to an angle in degrees: the limb is swung down by that
+## much (a stand-in pose until real animations are decoded).
+func build_model(index := 0, droop := {}) -> MeshInstance3D:
 	var model: Dictionary = models[index]
+	model["droop"] = droop
 	var batches := {}   # material id -> {pos, nrm, uv}
 	_run_sbc(model, batches)
 
 	var mesh := ArrayMesh.new()
 	for mat_id: int in batches:
 		var b: Dictionary = batches[mat_id]
-		var arrays := []
-		arrays.resize(Mesh.ARRAY_MAX)
-		arrays[Mesh.ARRAY_VERTEX] = b.pos
-		arrays[Mesh.ARRAY_NORMAL] = b.nrm
-		arrays[Mesh.ARRAY_TEX_UV] = b.uv
-		mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
-		mesh.surface_set_material(mesh.get_surface_count() - 1, _make_material(model.materials[mat_id], b.uv))
+		var material: Dictionary = model.materials[mat_id]
+		var uvs := _mirrored_uvs(material, b.uv)
+		_add_surface(mesh, b, uvs, _make_material(material, uvs, _mirror_flags(material)))
 	var inst := MeshInstance3D.new()
 	inst.name = model.name
 	inst.mesh = mesh
 	return inst
 
 
-func _make_material(m: Dictionary, uvs: PackedVector2Array) -> StandardMaterial3D:
+## Builds the model with a skeleton: every vertex is attached to the node it was drawn
+## with, so the rig can be posed by an animation (see NsbmdRig.apply_pose).
+func build_rig(index := 0) -> NsbmdRig:
+	var model: Dictionary = models[index]
+	model["droop"] = {}
+	var batches := {}   # material id -> {pos, nrm, uv, bones}
+	_run_sbc(model, batches, 1)
+	var bind := skeleton(index, [])
+
+	var mesh := ArrayMesh.new()
+	var box := AABB()
+	var first := true
+	for mat_id: int in batches:
+		var b: Dictionary = batches[mat_id]
+		var material: Dictionary = model.materials[mat_id]
+		var uvs := _mirrored_uvs(material, b.uv)
+		var bones := PackedInt32Array()
+		var weights := PackedFloat32Array()
+		var bones_of_vertex: PackedInt32Array = b.bones
+		for i in bones_of_vertex.size():
+			bones.append_array([bones_of_vertex[i], 0, 0, 0])
+			weights.append_array([1.0, 0.0, 0.0, 0.0])
+			var at: Vector3 = (bind[bones_of_vertex[i]] as Transform3D) * (b.pos as PackedVector3Array)[i]
+			box = AABB(at, Vector3.ZERO) if first else box.expand(at)
+			first = false
+		var arrays := []
+		arrays.resize(Mesh.ARRAY_MAX)
+		arrays[Mesh.ARRAY_VERTEX] = b.pos
+		arrays[Mesh.ARRAY_NORMAL] = b.nrm
+		arrays[Mesh.ARRAY_TEX_UV] = uvs
+		arrays[Mesh.ARRAY_BONES] = bones
+		arrays[Mesh.ARRAY_WEIGHTS] = weights
+		mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+		mesh.surface_set_material(mesh.get_surface_count() - 1, _make_material(material, uvs, _mirror_flags(material)))
+	mesh.custom_aabb = box.grow(box.size.length())
+	var rig := NsbmdRig.new()
+	rig.source = self
+	rig.model_index = index
+	rig.bind_bounds = box
+	rig.setup(mesh, model.nodes.size())
+	return rig
+
+
+## World transform of every node (by id) for a pose: a list of local transforms from an
+## animation, or empty for the model's own bind pose.
+func skeleton(index := 0, pose: Array = []) -> Dictionary:
+	var model: Dictionary = models[index]
+	model["droop"] = {}
+	_run_sbc(model, {}, 2, pose)
+	return model.world_ids
+
+
+## (mirror in s, mirror in t): the DS can repeat a texture mirrored; Godot cannot, so a
+## mirrored copy is put next to the picture (see _make_material) and the UVs shrink to fit.
+static func _mirror_flags(material: Dictionary) -> Vector2i:
+	return Vector2i(
+		1 if (material.tex_param & 0x10000) != 0 and (material.tex_param & 0x40000) != 0 else 0,
+		1 if (material.tex_param & 0x20000) != 0 and (material.tex_param & 0x80000) != 0 else 0)
+
+
+static func _mirrored_uvs(material: Dictionary, source: PackedVector2Array) -> PackedVector2Array:
+	var flags := _mirror_flags(material)
+	if flags == Vector2i.ZERO:
+		return source
+	var uvs := source.duplicate()
+	for i in uvs.size():
+		if flags.x:
+			uvs[i].x *= 0.5
+		if flags.y:
+			uvs[i].y *= 0.5
+	return uvs
+
+
+static func _add_surface(mesh: ArrayMesh, batch: Dictionary, uvs: PackedVector2Array, material: Material) -> void:
+	var arrays := []
+	arrays.resize(Mesh.ARRAY_MAX)
+	arrays[Mesh.ARRAY_VERTEX] = batch.pos
+	arrays[Mesh.ARRAY_NORMAL] = batch.nrm
+	arrays[Mesh.ARRAY_TEX_UV] = uvs
+	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+	mesh.surface_set_material(mesh.get_surface_count() - 1, material)
+
+
+func _make_material(m: Dictionary, uvs: PackedVector2Array, mirror := Vector2i.ZERO) -> StandardMaterial3D:
+	var mirror_s := mirror.x != 0
+	var mirror_t := mirror.y != 0
 	var mat := StandardMaterial3D.new()
 	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 	mat.texture_filter = BaseMaterial3D.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS_ANISOTROPIC
@@ -193,21 +278,53 @@ func _make_material(m: Dictionary, uvs: PackedVector2Array) -> StandardMaterial3
 			mat.cull_mode = BaseMaterial3D.CULL_DISABLED
 	if tex and tex.has_texture(m.texture):
 		var img := _sharpen(tex.get_image(m.texture, m.palette))
+		if mirror_s or mirror_t:
+			img = _with_mirror(img, mirror_s, mirror_t)
 		mat.albedo_texture = ImageTexture.create_from_image(img)
 		mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA_SCISSOR
 		mat.alpha_scissor_threshold = 0.5
 	return mat
 
 
+## The picture followed by its mirror image (sideways and/or downwards), so that
+## ordinary repeating gives the DS's mirrored repeat.
+static func _with_mirror(img: Image, mirror_s: bool, mirror_t: bool) -> Image:
+	var w := img.get_width()
+	var h := img.get_height()
+	var out := Image.create(w * (2 if mirror_s else 1), h * (2 if mirror_t else 1), false, img.get_format())
+	out.blit_rect(img, Rect2i(0, 0, w, h), Vector2i.ZERO)
+	var flipped_x := img.duplicate() as Image
+	flipped_x.flip_x()
+	var flipped_y := img.duplicate() as Image
+	flipped_y.flip_y()
+	var flipped_xy := flipped_x.duplicate() as Image
+	flipped_xy.flip_y()
+	if mirror_s:
+		out.blit_rect(flipped_x, Rect2i(0, 0, w, h), Vector2i(w, 0))
+	if mirror_t:
+		out.blit_rect(flipped_y, Rect2i(0, 0, w, h), Vector2i(0, h))
+	if mirror_s and mirror_t:
+		out.blit_rect(flipped_xy, Rect2i(0, 0, w, h), Vector2i(w, h))
+	return out
+
+
 # --- render commands (SBC): walk the skeleton, then draw meshes -------------
 
-func _run_sbc(model: Dictionary, batches: Dictionary) -> void:
+## `mode`: 0 = meshes in world space (bind pose or drooped), 1 = meshes in the space of
+## the node that owns them (for a rig), 2 = skeleton only. `pose` replaces the nodes'
+## own transforms with the local transforms of an animation.
+func _run_sbc(model: Dictionary, batches: Dictionary, mode := 0, pose: Array = []) -> void:
 	var nodes: Array = model.nodes
 	var stack: Array[Transform3D] = []
 	stack.resize(32)
 	stack.fill(Transform3D.IDENTITY)
+	var flat: Array[Transform3D] = stack.duplicate()   # identity matrices, for rig meshes
+	var slot_node := PackedInt32Array()               # which node each stack slot belongs to
+	slot_node.resize(32)
+	var current_node := 0
 	var current := Transform3D.IDENTITY
 	var material := 0
+	model["world_ids"] = {}
 	var p: int = model.sbc
 	while p < d.size():
 		var op := d[p]
@@ -221,12 +338,16 @@ func _run_sbc(model: Dictionary, batches: Dictionary) -> void:
 				p += 2
 			0x03:   # MTX: load stack slot
 				current = stack[d[p]]
+				current_node = slot_node[d[p]]
 				p += 1
 			0x04:   # MAT
 				material = d[p]
 				p += 1
 			0x05:   # SHP
-				_draw_mesh(model, model.meshes[d[p]], material, current, stack, batches)
+				if mode == 1:
+					_draw_mesh(model, model.meshes[d[p]], material, Transform3D.IDENTITY, flat, batches, true, current_node, slot_node)
+				elif mode == 0:
+					_draw_mesh(model, model.meshes[d[p]], material, current, stack, batches)
 				p += 1
 			0x06:   # NODEDESC: id, parent, flags, [store], [restore]
 				var id := d[p]
@@ -241,10 +362,20 @@ func _run_sbc(model: Dictionary, batches: Dictionary) -> void:
 					p += 1
 				if restore >= 0:
 					current = stack[restore]
-				current = current * (nodes[id].xform as Transform3D)
+				var local: Transform3D = nodes[id].xform
+				if id < pose.size() and pose[id] != null:
+					local = pose[id]
+				current = current * local
+				var swing: float = model.droop.get(nodes[id].name, 0.0)
+				if swing != 0.0:
+					var side := signf(current.basis.x.x)
+					current.basis = Basis(Vector3.BACK, deg_to_rad(-swing) * side) * current.basis
 				model.world[nodes[id].name] = current
+				model.world_ids[id] = current
+				current_node = id
 				if store >= 0:
 					stack[store] = current
+					slot_node[store] = id
 			0x07, 0x08:   # billboards
 				pass
 			0x09:   # NODEMIX: dest, count, count * (src, inv, weight)
@@ -264,14 +395,10 @@ func _run_sbc(model: Dictionary, batches: Dictionary) -> void:
 # --- GX display list interpreter -------------------------------------------
 
 func _draw_mesh(model: Dictionary, mesh: Dictionary, mat_id: int, start: Transform3D,
-		stack: Array[Transform3D], batches: Dictionary) -> void:
-	if not batches.has(mat_id):
-		batches[mat_id] = {
-			"pos": PackedVector3Array(),
-			"nrm": PackedVector3Array(),
-			"uv": PackedVector2Array(),
-		}
-	var out: Dictionary = batches[mat_id]
+		stack: Array[Transform3D], batches: Dictionary, rig := false, start_node := 0,
+		slot_node := PackedInt32Array()) -> void:
+	var node := start_node
+	var out := _batch(batches, mat_id, node, rig)
 	var material: Dictionary = model.materials[mat_id]
 	var tex_w := float(material.width)
 	var tex_h := float(material.height)
@@ -300,6 +427,8 @@ func _draw_mesh(model: Dictionary, mesh: Dictionary, mat_id: int, start: Transfo
 					pass
 				0x14:
 					current = stack[d.decode_u32(p) & 31]
+					if rig:
+						node = slot_node[d.decode_u32(p) & 31]
 					p += 4
 				0x10, 0x12, 0x13, 0x20, 0x29, 0x2A, 0x2B, 0x30, 0x31, 0x32, 0x33:
 					p += 4
@@ -348,9 +477,21 @@ func _draw_mesh(model: Dictionary, mesh: Dictionary, mat_id: int, start: Transfo
 					return
 			if emit:
 				buf.append([current * vtx, (current.basis * nrm).normalized(),
-					Vector2(st.x / tex_w, st.y / tex_h)])
+					Vector2(st.x / tex_w, st.y / tex_h), node])
 				count += 1
 				_assemble(prim, buf, count, out)
+
+
+## The vertex batch of a material (and, for a rig, of the node that owns the vertices).
+static func _batch(batches: Dictionary, mat_id: int, node: int, rig: bool) -> Dictionary:
+	if not batches.has(mat_id):
+		batches[mat_id] = {
+			"pos": PackedVector3Array(),
+			"nrm": PackedVector3Array(),
+			"uv": PackedVector2Array(),
+			"bones": PackedInt32Array(),   # node of every vertex
+		}
+	return batches[mat_id]
 
 
 static func _s10(v: int) -> int:
@@ -390,6 +531,7 @@ static func _tri(out: Dictionary, a: Array, b: Array, c: Array) -> void:
 		out.pos.append(v[0])
 		out.nrm.append(v[1])
 		out.uv.append(v[2])
+		out.bones.append(v[3])
 
 
 ## Enlarges a texture by a whole factor with nearest-neighbour, so the GPU's
@@ -401,8 +543,22 @@ static func _sharpen(src: Image) -> Image:
 	var img := src.duplicate() as Image
 	if rotsprite_tolerance >= 0 and factor > 1:
 		var passes := int(log(factor) / log(2.0))
-		img = RotSprite.upscale(src, passes, rotsprite_tolerance)
+		img = _smooth_cached(src, passes)
 	elif factor > 1:
 		img.resize(img.get_width() * factor, img.get_height() * factor, Image.INTERPOLATE_NEAREST)
 	img.generate_mipmaps()
 	return img
+
+
+## RotSprite upscaling is slow-ish, so results are kept in user://cache/.
+static func _smooth_cached(src: Image, passes: int) -> Image:
+	var path := "user://cache/rot_%d_%dx%d_%d_%d.png" % [
+		hash(src.get_data()), src.get_width(), src.get_height(), passes, rotsprite_tolerance]
+	if FileAccess.file_exists(path):
+		var cached := Image.load_from_file(path)
+		if cached:
+			return cached
+	var out := RotSprite.upscale(src, passes, rotsprite_tolerance)
+	DirAccess.make_dir_recursive_absolute("user://cache")
+	out.save_png(path)
+	return out

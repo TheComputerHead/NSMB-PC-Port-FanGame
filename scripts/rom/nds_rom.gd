@@ -10,6 +10,7 @@ var version := 0
 
 ## Maps "path/inside/rom" -> Vector2i(start, end) offsets in `data`.
 var files: Dictionary = {}
+var _fat_off := 0
 
 
 func open(path: String) -> Error:
@@ -28,6 +29,7 @@ func open(path: String) -> Error:
 	var fnt_size := data.decode_u32(0x44)
 	var fat_off := data.decode_u32(0x48)
 	var fat_size := data.decode_u32(0x4C)
+	_fat_off = fat_off
 	if fnt_off + fnt_size > data.size() or fat_off + fat_size > data.size():
 		return ERR_FILE_CORRUPT
 
@@ -69,3 +71,33 @@ func _read_dir(fnt_off: int, fat_off: int, dir_id: int, prefix: String) -> void:
 			if end >= start and end <= data.size():
 				files[prefix + entry_name] = Vector2i(start, end)
 			file_id += 1
+
+
+## A file by its FAT index. Needed for files without a name, like the code overlays.
+func file_by_id(id: int) -> PackedByteArray:
+	var start := data.decode_u32(_fat_off + id * 8)
+	var end := data.decode_u32(_fat_off + id * 8 + 4)
+	return data.slice(start, end)
+
+
+## The main ARM9 program as stored in the ROM (it may be compressed).
+func arm9() -> PackedByteArray:
+	var offset := data.decode_u32(0x20)
+	return data.slice(offset, offset + data.decode_u32(0x2C))
+
+
+## The ARM9 overlay table: [{id, ram, size, file_id, compressed}, ...].
+func overlays() -> Array[Dictionary]:
+	var out: Array[Dictionary] = []
+	var table := data.decode_u32(0x50)
+	for i in data.decode_u32(0x54) / 32:
+		var e := table + i * 32
+		var packed := data.decode_u32(e + 28)
+		out.append({
+			"id": data.decode_u32(e),
+			"ram": data.decode_u32(e + 4),
+			"size": data.decode_u32(e + 8),
+			"file_id": data.decode_u32(e + 24),
+			"compressed": (packed >> 24) & 1 == 1,
+		})
+	return out
